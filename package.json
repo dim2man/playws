@@ -1,0 +1,20 @@
+{
+  "name": "playws",
+  "version": "1.0.0",
+  "description": "**simple ws server for online playing**",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dim2man/playws.git"
+  },
+  "author": "Dmitry Manzhasov",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/dim2man/playws/issues"
+  },
+  "homepage": "https://github.com/dim2man/playws#readme",
+  "dependencies": {
+    "express": "^4.19.2",
+    "express-ws": "^5.0.2"
+  }
+}
