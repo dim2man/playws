@@ -1,22 +1,374 @@
 <!doctype html>
 <html>
 <head>
+	<style>
+		* {margin: 0; padding: 0; box-sizing: border-box;}
+		html {font-family: sans-serif; color: black; --empty-background: #eee; --empty-border: #aaa; --ship-background: #777; --ship-border: #777; --error: #f00;}
+
+		h1 {font-size: 0.4rem; text-align: center; margin: 0.1rem;}
+
+		#status {font-size: 0.3rem; text-align: center; margin: 0.1rem; width: 100%;}
+		#status.error {color: var(--error);}
+
+		.modal {padding: 3rem 2rem; display: flex; flex-flow: column nowrap; justify-content: center; align-items: center; gap: 1rem;}
+		.modal > input[type="text"] {font-size: 0.4rem; padding: 0.2rem; width: 100%;}
+		.modal > button {font-size: 0.4rem; padding: 0.2rem;}
+		.hidden {display: none!important;}
+
+		#game {display: flex; flex-flow: column nowrap; gap: 0.1rem; margin: 0.1rem; align-items: center;}
+		.fields {display: flex; justify-content: center; align-items: center; gap: 0.1rem;}
+		.field {display: grid; grid-template: repeat(10, 0.4rem) / repeat(10, 0.4rem); border: solid var(--black) 1px; width: 4rem;}
+		.field > button {border-radius: none; border: solid 1px var(--empty-border); background-color: var(--empty-background);}
+		.field > button.ship {border-color: var(--ship-border); background-color: var(--ship-background);}
+		.field > button[disabled] {opacity: 0.5;}
+		#start-game {font-size: 0.3rem; padding: 0.1rem;}
+
+		@media (orientation: landscape) {
+			html {font-size: 8.333vh;}
+			.fields {flex-flow: row nowrap;}
+		}
+
+		@media (orientation: portrait) {
+			html {font-size: 10vw;}
+			.fields {flex-flow: column nowrap;}
+		}
+	</style>
 	<script>
+		const gamename = 'seabattle';
+		const CMD = {
+			iam: 'iam',
+			nok: 'nok',
+			ok: 'ok',
+			to: 'to',
+			from: 'from',
+			offer: 'offer',
+			confirm: 'confirm',
+			msg: 'msg',
+			dump: 'dump',
+		};
 		const socket = new WebSocket('/ws');
+		let isSocketReady = false;
+		let messageHanlder;
+
+		let nameModalEl, nameInputEl, loginButtonEl, opponentModalEl, opponentInputEl, offerButtonEl, statusEl, gameEl, myFieldEl, opponentFieldEl, startButtonEl;
+
+		let myName, opponentName;
+
+		const FIELD_WIDTH = 10, FIELD_HEIGHT = 10, MAX_SHIP_LENGTH = 4, FIELD_SET = {1: 4, 2: 3, 3: 2, 4: 1};
+		const CELL = {empty: 0, ship: 1, fired: 2, missed: 3, killed: 4, disabled: 5};
+		const myFieldModel = [], opponentFieldModel = [];
+
+		/* socket api - start */
 		socket.onerror = () => {
-			console.log('Failed to open websocket');
+			isSocketReady = false;
+			console.error('Failed to open websocket');
 		};
 		socket.onopen = (event) => {
-			console.log('onopen');
-			console.log(event);
+			isSocketReady = true;
+			show(nameModalEl);
+			if (myName) doLogin();
 		};
 		socket.onmessage = (event) => {
-			console.log('onmessage');
-			console.log(event);
+			const msg = event.data;
+			console.log(`>>>> ${msg}`);
+			if (messageHanlder) messageHanlder(msg);
 		};
+		function send(cmd, handler) {
+			console.log(`<<<< ${cmd}`);
+			socket.send(cmd);
+			messageHanlder = handler;
+		}
+		function isNok(msg) {
+			return msg.startsWith(CMD.nok);
+		}
+		function isOk(msg) {
+			return msg.startsWith(CMD.ok);
+		}
+		function dropHandler() {
+			messageHanlder = void 0;
+		}
+		/* socket api - finish */
+
+		try {
+			const params = new URLSearchParams(location.search);
+			if (params.has('name')) myName = params.get('name');
+			if (params.has('opponent')) opponentName = params.get('opponent');
+		} catch(e) {
+			console.error('URLSearchParams failed or not supported');
+		}
+
+		function show(el) {
+			if (!el) return;
+			el.classList.remove('hidden');
+		}
+
+		function hide(el) {
+			if (!el) return;
+			el.classList.add('hidden');
+		}
+
+		function log(msg) {
+			statusEl.classList.remove('error');
+			statusEl.textContent = msg;
+		}
+
+		function logError(msg) {
+			statusEl.classList.add('error');
+			statusEl.textContent = msg;
+		}
+
+		function handleLoginClick() {
+			myName = nameInputEl.value;
+			if (!myName) {
+				logError('Введите имя!');
+				return;
+			}
+			doLogin();
+		}
+
+		function doLogin() {
+			if (nameInputEl.value !== myName) {
+				nameInputEl.value = myName;
+			}
+			nameInputEl.disabled = true;
+			send(`iam ${myName}`, (msg) => {
+				nameInputEl.disabled = false;
+				if (isNok(msg)) {
+					dropHandler();
+					logError(msg.substring(CMD.nok.length).trim());
+					return;
+				}
+				log(`${myName} вошёл успешно`);
+				hide(nameModalEl);
+				show(opponentModalEl);
+
+				if (opponentName) doOffer();
+			});
+			log('Ждём ответа...');
+		}
+
+		function handleOfferClick() {
+			opponentName = opponentInputEl.value;
+			if (!opponentName) {
+				logError('Введите имя соперника!');
+				return;
+			}
+			doOffer();
+		}
+
+		function doOffer() {
+			if (opponentInputEl.value !== opponentName) {
+				opponentInputEl.value = opponentName;
+			}
+			opponentInputEl.disabled = true;
+			send(`${CMD.offer} ${gamename} ${CMD.to} ${opponentName}`, (msg) => {
+				if (isNok(msg)) {
+					opponentInputEl.disabled = false;
+					dropHandler();
+					logError(msg.substring(CMD.nok.length).trim());
+					return;
+				}
+				if (isOk(msg)) {
+					log(`Ждём соперника для ${myName}...`);
+					return;
+				}
+				if (msg.startsWith(CMD.confirm)) {
+					dropHandler();
+					const [gamenameTest, opponentNameTest] = msg.substring(CMD.confirm.length).trim().split(` ${CMD.from} `).map(s => s.trim());
+					if (gamenameTest === gamename && opponentNameTest === opponentName) {
+						hide(opponentModalEl);
+						show(gameEl);
+						log(`Игра начинается, расставьте свои корабли`);
+					} else {
+						log('Игра или соперник не совпали');
+						opponentInputEl.disabled = false;
+					}
+				}
+			});
+			log('Ждём ответа...');
+		}
+
+		function fillField(el, handleClick, disabled) {
+			for(let row = 0; row < FIELD_HEIGHT; row++) {
+				for(let col = 0; col < FIELD_WIDTH; col++) {
+					const button = document.createElement('button');
+					button.disabled = disabled;
+					button.dataset.row = row;
+					button.dataset.col = col;
+					button.addEventListener('click', (function(r, c) {
+						return function() {
+							handleClick(button, r, c);
+						};
+					})(row, col));
+					el.appendChild(button);
+				}
+			}
+		}
+
+		function clearFieldModel(model) {
+			model.splice(0, model.length);
+			for(let row = 0; row < FIELD_HEIGHT; row++) {
+				model[row] = [];
+				for(let col = 0; col < FIELD_WIDTH; col++) {
+					model[row][col] = CELL.empty;
+				}
+			}
+		}
+
+		/*
+			возвращает число кораблей из одинакового количества клеток и признак ошибки
+		*/
+		function countShips(model) {
+			const stat = {error: false};
+			const checkedPairs = new Set();
+
+			for(let row = 0; row < FIELD_HEIGHT; row++) {
+				for(let col = 0; col < FIELD_WIDTH; col++) {
+					if (checkedPairs.has(`${row}-${col}`)) continue;
+					checkedPairs.add(`${row}-${col}`);
+					if (model[row][col] === CELL.ship) {
+						// длина по горизонтали
+						let lenHorizontal = 1;
+						for (; isValidCol(col+lenHorizontal) && model[row][col+lenHorizontal] === CELL.ship; lenHorizontal++) {
+							checkedPairs.add(`${row}-${col+lenHorizontal}`);
+						}
+						// длина по вертикали
+						let lenVertical = 1;
+						for (; isValidRow(row+lenVertical) && model[row+lenVertical][col] === CELL.ship; lenVertical++) {
+							checkedPairs.add(`${row+lenVertical}-${col}`);
+						}
+						if (lenHorizontal > 1 && lenVertical > 1) {
+							stat.error = true;
+						} else {
+							let error = false;
+							if (!error && isValidRow(row-1)) {
+								for (let diff = -1; diff < lenHorizontal + 1; diff++) {
+									if (isValidCol(col+diff) && model[row-1][col+diff] === CELL.ship) {
+										error = true;
+										break;
+									}
+								}
+							}
+							if (!error && isValidRow(row+lenVertical)) {
+								for (let diff = -1; diff < lenHorizontal + 1; diff++) {
+									if (isValidCol(col+diff) && model[row+lenVertical][col+diff] === CELL.ship) {
+										error = true;
+										break;
+									}
+								}
+							}
+							if (!error && isValidCol(col-1)) {
+								for (let diff = 0; diff < lenVertical; diff++) {
+									if (isValidRow(row+diff) && model[row+diff][col-1] === CELL.ship) {
+										error = true;
+										break;
+									}
+								}
+							}
+							if (!error && isValidCol(col+lenHorizontal)) {
+								for (let diff = 0; diff < lenVertical; diff++) {
+									if (isValidRow(row+diff) && model[row+diff][col+lenHorizontal] === CELL.ship) {
+										error = true;
+										break;
+									}
+								}
+							}
+							const len = Math.max(lenHorizontal, lenVertical);
+							if (error || !Object.keys(FIELD_SET).includes(String(len))) {
+								stat.error = true;
+							} else {
+								stat[len] = (stat[len] || 0) + 1;
+							}
+						}
+					}
+				}
+			}
+
+			return stat;
+		}
+
+		function isAllShipsSet(stat) {
+			if (stat.error) return false;
+			for(let len = 1; len <= Math.max(FIELD_HEIGHT, FIELD_WIDTH); len++) {
+				const requiredCount = FIELD_SET[len] || 0;
+				const statCount = stat[len] || 0;
+				if (requiredCount !== statCount) return false;
+			}
+			return true;
+		}
+
+		function isValidRow(row) {
+			return row >= 0 && row < FIELD_HEIGHT;
+		}
+
+		function isValidCol(col) {
+			return col >= 0 && col < FIELD_WIDTH;
+		}
+
+		function handleStartClick() {
+			startButtonEl.classList.add('hidden');
+		}
+
+		function init() {
+			nameModalEl = document.getElementById('name-modal');
+			nameInputEl = document.getElementById('name');
+			loginButtonEl = document.getElementById('login');
+			opponentModalEl = document.getElementById('opponent-modal');
+			opponentInputEl = document.getElementById('opponent');
+			offerButtonEl = document.getElementById('offer');
+			statusEl = document.getElementById('status');
+			gameEl = document.getElementById('game');
+			myFieldEl = document.getElementById('my-field');
+			opponentFieldEl = document.getElementById('opponent-field');
+			startButtonEl = document.getElementById('start-game');
+
+			loginButtonEl.addEventListener('click', handleLoginClick);
+			offerButtonEl.addEventListener('click', handleOfferClick);
+			startButtonEl.addEventListener('click', handleStartClick);
+
+			clearFieldModel(myFieldModel);
+			clearFieldModel(opponentFieldModel);
+
+			fillField(myFieldEl, (button, row, col) => {
+				button.classList.toggle('ship');
+				myFieldModel[row][col] = myFieldModel[row][col] === CELL.empty ? CELL.ship : CELL.empty;
+				const stat = countShips(myFieldModel);
+				const isAllSet = isAllShipsSet(stat);
+				if (stat.error) {
+					logError('Ошибка в расстановке кораблей');
+					startButtonEl.disabled = true;
+				} else if (!isAllSet) {
+					log('Продолжайте расставлять');
+					startButtonEl.disabled = true;
+				} else {
+					log('');
+					startButtonEl.disabled = false;
+				}
+			}, false);
+			fillField(opponentFieldEl, (button, row, col) => {
+				console.log(`opponent field ${row} ${col} clicked`);
+			}, true);
+
+			if (isSocketReady) {
+				show(nameModalEl);
+				if (myName) doLogin();
+			}
+		}
+
+		window.onload = init;
 	</script>
 </head>
 <body>
-	<h1>Sea battle
+	<h1>Морской бой</h1>
+	<div id="name-modal" class="modal hidden"><input id="name" type="text" value="" placeholder="Ваше имя"><button id="login" type="button">Войти</button></div>
+	<div id="opponent-modal" class="modal hidden"><input id="opponent" type="text" value="" placeholder="Имя соперника"><button id="offer" type="button">Предложить игру</button></div>
+	<div id="game" class="hidden">
+		<div class="fields">
+			<div id="my-field" class="field"></div>
+			<div id="opponent-field" class="field"></div>
+		</div>
+		<button id="start-game" disabled>Начать игру</button>
+	</div>
+	<div id="status"></div>
 </body>
 </html>
