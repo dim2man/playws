@@ -7,7 +7,7 @@
 
 		h1 {font-size: 0.4rem; text-align: center; margin: 0.1rem;}
 
-		#status {font-size: 0.3rem; text-align: center; margin: 0.1rem; width: 100%;}
+		#status {font-size: 0.3rem; text-align: center; margin: 0.1rem;}
 		#status.error {color: var(--error);}
 
 		.modal {padding: 3rem 2rem; display: flex; flex-flow: column nowrap; justify-content: center; align-items: center; gap: 1rem;}
@@ -15,21 +15,22 @@
 		.modal > button {font-size: 0.4rem; padding: 0.2rem;}
 		.hidden {display: none!important;}
 
-		#game {display: flex; flex-flow: column nowrap; gap: 0.1rem; margin: 0.1rem; align-items: center;}
-		.fields {display: flex; justify-content: center; align-items: center; gap: 0.1rem;}
-		.field {display: grid; grid-template: repeat(10, 0.4rem) / repeat(10, 0.4rem); border: solid var(--black) 1px; width: 4rem;}
-		.field > button {border-radius: none; border: solid 1px var(--empty-border); background-color: var(--empty-background);}
+		#game {width: 100%; overflow: auto; margin: 0.1rem 0;}
+		.inner {width: var(--width); min-width: 100%; display: flex; flex-flow: column nowrap; gap: 0.2rem; align-items: center;}
+		.fields {display: flex; justify-content: center; align-items: center; gap: 0.2rem;}
+		.field {display: grid; grid-template: repeat(10, 0.8rem) / repeat(10, 0.8rem); border: solid var(--black) 1px; width: 8rem;}
+		.field > button {border-radius: 0; border: solid 1px var(--empty-border); background-color: var(--empty-background); font-size: 0.5rem;}
 		.field > button.ship {border-color: var(--ship-border); background-color: var(--ship-background);}
-		.field > button[disabled] {opacity: 0.5;}
+		.field > button[disabled] {opacity: 0.8; color: black;}
 		#start-game {font-size: 0.3rem; padding: 0.1rem;}
 
 		@media (orientation: landscape) {
-			html {font-size: 8.333vh;}
+			html {font-size: 10vh; --width: 16.2rem;}
 			.fields {flex-flow: row nowrap;}
 		}
 
 		@media (orientation: portrait) {
-			html {font-size: 10vw;}
+			html {font-size: 10vw; --width: 8rem;}
 			.fields {flex-flow: column nowrap;}
 		}
 	</style>
@@ -46,6 +47,14 @@
 			msg: 'msg',
 			dump: 'dump',
 		};
+		const GAME_MSG = {
+			ready: 'ready',
+			fire: 'fire',
+			missed: 'missed',
+			damaged: 'damaged',
+			killed: 'killed',
+			imwin: 'imwin,'
+		};
 		const socket = new WebSocket('/ws');
 		let isSocketReady = false;
 		let messageHanlder;
@@ -55,8 +64,9 @@
 		let myName, opponentName;
 
 		const FIELD_WIDTH = 10, FIELD_HEIGHT = 10, MAX_SHIP_LENGTH = 4, FIELD_SET = {1: 4, 2: 3, 3: 2, 4: 1};
-		const CELL = {empty: 0, ship: 1, fired: 2, missed: 3, killed: 4, disabled: 5};
+		const CELL = {empty: 0, ship: 1, fired: 2, missed: 3, damaged: 4, killed: 5};
 		const myFieldModel = [], opponentFieldModel = [];
+		let isMyTurn = false, isOpponentTurn = false, fireRow, fireCol;
 
 		/* socket api - start */
 		socket.onerror = () => {
@@ -76,7 +86,9 @@
 		function send(cmd, handler) {
 			console.log(`<<<< ${cmd}`);
 			socket.send(cmd);
-			messageHanlder = handler;
+			if (handler) {
+				setHandler(handler);
+			}
 		}
 		function isNok(msg) {
 			return msg.startsWith(CMD.nok);
@@ -84,8 +96,14 @@
 		function isOk(msg) {
 			return msg.startsWith(CMD.ok);
 		}
+		function isMsg(msg) {
+			return msg.startsWith(CMD.msg);
+		}
+		function setHandler(handler) {
+			messageHanlder = handler;
+		}
 		function dropHandler() {
-			messageHanlder = void 0;
+			setHandler(void 0);
 		}
 		/* socket api - finish */
 
@@ -179,6 +197,7 @@
 						hide(opponentModalEl);
 						show(gameEl);
 						log(`Игра начинается, расставьте свои корабли`);
+						setHandler(waitForOpponent);
 					} else {
 						log('Игра или соперник не совпали');
 						opponentInputEl.disabled = false;
@@ -187,6 +206,122 @@
 			});
 			log('Ждём ответа...');
 		}
+
+		function waitForOpponent(msg) {
+			if (isOk(msg)) return;
+			if (!isMsg(msg)) {
+				console.error(`unexpected message: ${msg}`);
+				return;
+			}
+			const payload = msg.substring(CMD.msg.length).trim();
+			switch(true) {
+				case payload.startsWith(GAME_MSG.ready): {
+					if (!isMyTurn) {
+						isOpponentTurn = true;
+						log('Соперник расставил свои корабли и ждёт тебя');
+					} else {
+						isOpponentTurn = false;
+						setFieldDisabled(opponentFieldEl, false);
+						log('Стреляй');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.fire): {
+					if (isOpponentTurn) {
+						const [row, col] = payload.substring(GAME_MSG.fire.length).trim().split(' ').map(s => Number(s.trim()));
+						if (isValidRow(row) && isValidCol(col)) {
+							if (myFieldModel[row][col] === CELL.ship) {
+								myFieldModel[row][col] = CELL.damaged;
+								const {pairs, isKilled} = checkIfKilled(myFieldModel, row, col);
+								if (isKilled) {
+									pairs.forEach(([r, c]) => {
+										setShipState(myFieldEl, r, c, CELL.killed);
+									});
+								} else {
+									setShipState(myFieldEl, row, col, CELL.damaged);
+								}
+								send(`${CMD.msg} ${isKilled ? GAME_MSG.killed : GAME_MSG.damaged}`);
+								if (isKilled && isAllShipsSet(countShips(myFieldModel, CELL.killed))) {
+									setFieldDisabled(opponentFieldEl, true);
+									log('Вы проиграли...');
+								} else {
+									log('Попали, ждём выстрела соперника...');
+								}								
+							} else {
+								if (myFieldModel[row][col] === CELL.empty) {
+									myFieldModel[row][col] = CELL.missed;
+									setShipState(myFieldEl, row, col, CELL.missed);
+								}
+								send(`${CMD.msg} ${GAME_MSG.missed}`);
+								isOpponentTurn = false;
+								isMyTurn = true;
+								log('Мимо, стреляй!');
+							}
+						} else {
+							logError('Неожиданная ошибка координат');
+						}
+					} else {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.missed): {
+					if (!isOpponentTurn && !isMyTurn) {
+						opponentFieldModel[fireRow][fireCol] = CELL.missed;
+						setShipState(opponentFieldEl, fireRow, fireCol, CELL.missed);
+						isOpponentTurn = true;
+						log('Мимо, ждём выстрела соперника...');
+					} else {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.damaged): {
+					if (!isOpponentTurn && !isMyTurn) {
+						opponentFieldModel[fireRow][fireCol] = CELL.damaged;
+						setShipState(opponentFieldEl, fireRow, fireCol, CELL.damaged);
+						isMyTurn = true;
+						log('Попал, стреляй ещё!');
+					} else {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.killed): {
+					if (!isOpponentTurn && !isMyTurn) {
+						opponentFieldModel[fireRow][fireCol] = CELL.damaged;
+						const {pairs} = checkIfKilled(opponentFieldModel, fireRow, fireCol);
+						// мы точно знаем, что корабль убит
+						pairs.forEach(([r, c]) => {
+							setShipState(opponentFieldEl, r, c, CELL.killed);
+						});
+						if (isAllShipsSet(countShips(opponentFieldModel, CELL.killed))) {
+							setFieldDisabled(opponentFieldEl, true);
+							send(`${CMD.msg} ${GAME_MSG.imwin} ${JSON.stringify(getShipPairs(myFieldModel))}`);
+							log('Победа!');
+						} else {
+							isMyTurn = true;
+							log('Убил, стреляй ещё!');
+						}
+					} else {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.imwin): {
+					try {
+						const pairs = JSON.parse(payload.substring(GAME_MSG.imwin.length).trim());
+						pairs.forEach(([r, c]) => {
+							opponentFieldModel[r][c] = CELL.ship;
+							setShipState(opponentFieldEl, r, c, CELL.ship);
+						});
+					} catch(e) {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+			}
+ 		}
 
 		function fillField(el, handleClick, disabled) {
 			for(let row = 0; row < FIELD_HEIGHT; row++) {
@@ -205,6 +340,45 @@
 			}
 		}
 
+		function setFieldDisabled(fieldEl, disabled) {
+			for(let button of fieldEl.querySelectorAll('button')) {
+				button.disabled = disabled;
+			}
+		}
+
+		function setShipState(fieldEl, row, col, states) {
+			const button = fieldEl.querySelector(`button[data-row="${row}"][data-col="${col}"]`);
+			states = Array.isArray(states) ? states : [states];
+			for(let state of states) {
+				switch(state) {
+					case CELL.empty:
+						button.classList.remove('ship');
+						button.textContent = '';
+						break;
+					case CELL.ship:
+						button.classList.add('ship');
+						button.textContent = '';
+						break;
+					case CELL.fired:
+						button.classList.remove('ship');
+						button.textContent = '●';
+						break;
+					case CELL.missed:
+						button.classList.remove('ship');
+						button.textContent = '◎';
+						break;
+					case CELL.damaged:
+						button.classList.add('ship');
+						button.textContent = '🔥';
+						break;
+					case CELL.killed:
+						button.classList.add('ship');
+						button.textContent = '❌';
+						break;
+				}
+			}
+		}
+
 		function clearFieldModel(model) {
 			model.splice(0, model.length);
 			for(let row = 0; row < FIELD_HEIGHT; row++) {
@@ -218,7 +392,7 @@
 		/*
 			возвращает число кораблей из одинакового количества клеток и признак ошибки
 		*/
-		function countShips(model) {
+		function countShips(model, type=CELL.ship) {
 			const stat = {error: false};
 			const checkedPairs = new Set();
 
@@ -226,15 +400,15 @@
 				for(let col = 0; col < FIELD_WIDTH; col++) {
 					if (checkedPairs.has(`${row}-${col}`)) continue;
 					checkedPairs.add(`${row}-${col}`);
-					if (model[row][col] === CELL.ship) {
+					if (model[row][col] === type) {
 						// длина по горизонтали
 						let lenHorizontal = 1;
-						for (; isValidCol(col+lenHorizontal) && model[row][col+lenHorizontal] === CELL.ship; lenHorizontal++) {
+						for (; isValidCol(col+lenHorizontal) && model[row][col+lenHorizontal] === type; lenHorizontal++) {
 							checkedPairs.add(`${row}-${col+lenHorizontal}`);
 						}
 						// длина по вертикали
 						let lenVertical = 1;
-						for (; isValidRow(row+lenVertical) && model[row+lenVertical][col] === CELL.ship; lenVertical++) {
+						for (; isValidRow(row+lenVertical) && model[row+lenVertical][col] === type; lenVertical++) {
 							checkedPairs.add(`${row+lenVertical}-${col}`);
 						}
 						if (lenHorizontal > 1 && lenVertical > 1) {
@@ -243,7 +417,7 @@
 							let error = false;
 							if (!error && isValidRow(row-1)) {
 								for (let diff = -1; diff < lenHorizontal + 1; diff++) {
-									if (isValidCol(col+diff) && model[row-1][col+diff] === CELL.ship) {
+									if (isValidCol(col+diff) && model[row-1][col+diff] === type) {
 										error = true;
 										break;
 									}
@@ -251,7 +425,7 @@
 							}
 							if (!error && isValidRow(row+lenVertical)) {
 								for (let diff = -1; diff < lenHorizontal + 1; diff++) {
-									if (isValidCol(col+diff) && model[row+lenVertical][col+diff] === CELL.ship) {
+									if (isValidCol(col+diff) && model[row+lenVertical][col+diff] === type) {
 										error = true;
 										break;
 									}
@@ -259,7 +433,7 @@
 							}
 							if (!error && isValidCol(col-1)) {
 								for (let diff = 0; diff < lenVertical; diff++) {
-									if (isValidRow(row+diff) && model[row+diff][col-1] === CELL.ship) {
+									if (isValidRow(row+diff) && model[row+diff][col-1] === type) {
 										error = true;
 										break;
 									}
@@ -267,7 +441,7 @@
 							}
 							if (!error && isValidCol(col+lenHorizontal)) {
 								for (let diff = 0; diff < lenVertical; diff++) {
-									if (isValidRow(row+diff) && model[row+diff][col+lenHorizontal] === CELL.ship) {
+									if (isValidRow(row+diff) && model[row+diff][col+lenHorizontal] === type) {
 										error = true;
 										break;
 									}
@@ -297,16 +471,92 @@
 			return true;
 		}
 
+		function checkIfKilled(model, row, col) {
+			const pairs = [];
+			let isKilled = true, startRow = row, endRow = row, startCol = col, endCol = col;
+			if (isKilled) {
+				for (let r = row; r >= 0; r--) {
+					if (model[r][col] === CELL.ship) {
+						isKilled = false;
+						break;
+					}
+					if (model[r][col] !== CELL.damaged) break;
+					startRow = r;
+				}
+			}
+			if (isKilled) {
+				for (let r = row; r < FIELD_HEIGHT; r++) {
+					if (model[r][col] === CELL.ship) {
+						isKilled = false;
+						break;
+					}
+					if (model[r][col] !== CELL.damaged) break;
+					endRow = r;
+				}
+			}
+			if (isKilled) {
+				for (let c = col; c >= 0; c--) {
+					if (model[row][c] === CELL.ship) {
+						isKilled = false;
+						break;
+					}
+					if (model[row][c] !== CELL.damaged) break;
+					startCol = c;
+				}
+			}
+			if (isKilled) {
+				for (let c = col; c < FIELD_WIDTH; c++) {
+					if (model[row][c] === CELL.ship) {
+						isKilled = false;
+						break;
+					}
+					if (model[row][c] !== CELL.damaged) break;
+					endCol = c;
+				}
+			}
+			if (isKilled) {
+				for (let r = startRow; r <= endRow; r++) {
+					for (let c = startCol; c <= endCol; c++) {
+						pairs.push([r, c]);
+						model[r][c] = CELL.killed;
+					}
+				}
+			}
+			return {pairs, isKilled};
+		}
+
+		function getShipPairs(model, type=CELL.ship) {
+			const pairs = [];
+			for(let row = 0; row < FIELD_HEIGHT; row++) {
+				for(let col = 0; col < FIELD_WIDTH; col++) {
+					if (model[row][col] == type) {
+						pairs.push([row,col]);
+					}
+				}
+			}
+			return pairs;
+		}
+
 		function isValidRow(row) {
-			return row >= 0 && row < FIELD_HEIGHT;
+			return typeof row === 'number' && row >= 0 && row < FIELD_HEIGHT;
 		}
 
 		function isValidCol(col) {
-			return col >= 0 && col < FIELD_WIDTH;
+			return typeof col === 'number' && col >= 0 && col < FIELD_WIDTH;
 		}
 
 		function handleStartClick() {
 			startButtonEl.classList.add('hidden');
+			setFieldDisabled(myFieldEl, true);
+			if (!isOpponentTurn) {
+				isMyTurn = true;
+				log('Ждём когда соперник расставит корабли...');
+			} else {
+				isMyTurn = false;
+				log('Ждём выстрела соперника...');
+				setFieldDisabled(opponentFieldEl, false);
+			}
+			send(`${CMD.msg} ${GAME_MSG.ready}`);
 		}
 
 		function init() {
@@ -328,6 +578,8 @@
 
 			clearFieldModel(myFieldModel);
 			clearFieldModel(opponentFieldModel);
+			isMyTurn = false;
+			isOpponentTurn = false;
 
 			fillField(myFieldEl, (button, row, col) => {
 				button.classList.toggle('ship');
@@ -346,7 +598,13 @@
 				}
 			}, false);
 			fillField(opponentFieldEl, (button, row, col) => {
-				console.log(`opponent field ${row} ${col} clicked`);
+				if (!isMyTurn || opponentFieldModel[row][col] !== CELL.empty) return;
+				isMyTurn = false;
+				fireRow = row;
+				fireCol = col;
+				opponentFieldModel[row][col] = CELL.fired;
+				setShipState(opponentFieldEl, fireRow, fireCol, CELL.fired);
+				send(`${CMD.msg} ${GAME_MSG.fire} ${fireRow} ${fireCol}`);
 			}, true);
 
 			if (isSocketReady) {
@@ -363,11 +621,13 @@
 	<div id="name-modal" class="modal hidden"><input id="name" type="text" value="" placeholder="Ваше имя"><button id="login" type="button">Войти</button></div>
 	<div id="opponent-modal" class="modal hidden"><input id="opponent" type="text" value="" placeholder="Имя соперника"><button id="offer" type="button">Предложить игру</button></div>
 	<div id="game" class="hidden">
-		<div class="fields">
-			<div id="my-field" class="field"></div>
-			<div id="opponent-field" class="field"></div>
+		<div class="inner">
+			<div class="fields">
+				<div id="my-field" class="field"></div>
+				<div id="opponent-field" class="field"></div>
+			</div>
+			<button id="start-game" disabled>Начать игру</button>
 		</div>
-		<button id="start-game" disabled>Начать игру</button>
 	</div>
 	<div id="status"></div>
 </body>
