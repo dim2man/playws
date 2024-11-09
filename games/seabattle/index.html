@@ -51,6 +51,7 @@
 			ready: 'ready',
 			fire: 'fire',
 			missed: 'missed',
+			confirmMissed: 'confirmMissed',
 			damaged: 'damaged',
 			killed: 'killed',
 			imwin: 'imwin,'
@@ -254,8 +255,7 @@
 								}
 								send(`${CMD.msg} ${GAME_MSG.missed}`);
 								isOpponentTurn = false;
-								isMyTurn = true;
-								log('Мимо, стреляй!');
+								log('Ждём подтверждения...');
 							}
 						} else {
 							logError('Неожиданная ошибка координат');
@@ -270,7 +270,17 @@
 						opponentFieldModel[fireRow][fireCol] = CELL.missed;
 						setShipState(opponentFieldEl, fireRow, fireCol, CELL.missed);
 						isOpponentTurn = true;
+						send(`${CMD.msg} ${GAME_MSG.confirmMissed}`);
 						log('Мимо, ждём выстрела соперника...');
+					} else {
+						logError('Неожиданная ошибка хода');
+					}
+				}
+				break;
+				case payload.startsWith(GAME_MSG.confirmMissed): {
+					if (!isOpponentTurn && !isMyTurn) {
+						isMyTurn = true;
+						log('Мимо, стреляй!');
 					} else {
 						logError('Неожиданная ошибка хода');
 					}

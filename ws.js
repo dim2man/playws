@@ -130,7 +130,6 @@ exports.setupWs = function(app) {
 						return;
 					}
 					send(partnerConn, game.player_name, msg);
-					send(conn, name, CMD.ok);
 				}
 				break;
 
