@@ -9,6 +9,7 @@ const CMD = {
 	from: 'from',
 	offer: 'offer',
 	confirm: 'confirm',
+	finish: 'finish',
 	msg: 'msg', 
 	dump: 'dump',
 };
@@ -107,6 +108,21 @@ exports.setupWs = function(app) {
 						games[name] = {player_name, gamename, status: STATUS.offer};
 						send(conn, name, `${CMD.ok}`);
 					}
+				}
+				break;
+
+			case msg.startsWith(CMD.finish): {
+					if (!name) {
+						send(conn, name, `${CMD.nok} name must be set before, use ${CMD.iam} command`);
+						return;
+					}
+					const game = games[name];
+					if (!game) {
+						send(conn, name, `${CMD.nok} no game exists`);
+						return;
+					}
+					delete games[name];
+					send(conn, name, CMD.ok);
 				}
 				break;
 

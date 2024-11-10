@@ -22,7 +22,7 @@
 		.field > button {border-radius: 0; border: solid 1px var(--empty-border); background-color: var(--empty-background); font-size: 0.5rem;}
 		.field > button.ship {border-color: var(--ship-border); background-color: var(--ship-background);}
 		.field > button[disabled] {opacity: 0.8; color: black;}
-		#start-game {font-size: 0.3rem; padding: 0.1rem;}
+		.game-button {font-size: 0.3rem; padding: 0.1rem;}
 
 		@media (orientation: landscape) {
 			html {font-size: 10vh; --width: 16.2rem;}
@@ -44,6 +44,7 @@
 			from: 'from',
 			offer: 'offer',
 			confirm: 'confirm',
+			finish: 'finish',
 			msg: 'msg',
 			dump: 'dump',
 		};
@@ -54,17 +55,17 @@
 			confirmMissed: 'confirmMissed',
 			damaged: 'damaged',
 			killed: 'killed',
-			imwin: 'imwin,'
+			imwin: 'imwin',
 		};
 		const socket = new WebSocket('/ws');
 		let isSocketReady = false;
 		let messageHanlder;
 
-		let nameModalEl, nameInputEl, loginButtonEl, opponentModalEl, opponentInputEl, offerButtonEl, statusEl, gameEl, myFieldEl, opponentFieldEl, startButtonEl;
+		let nameModalEl, nameInputEl, loginButtonEl, opponentModalEl, opponentInputEl, offerButtonEl, statusEl, gameEl, myFieldEl, opponentFieldEl, startButtonEl, playAgainButtonEl;
 
 		let myName, opponentName;
 
-		const FIELD_WIDTH = 10, FIELD_HEIGHT = 10, MAX_SHIP_LENGTH = 4, FIELD_SET = {1: 4, 2: 3, 3: 2, 4: 1};
+		const FIELD_WIDTH = 10, FIELD_HEIGHT = 10, FIELD_SET = {1: 4, 2: 3, 3: 2, 4: 1}, FINISH_DELAY = 1000;
 		const CELL = {empty: 0, ship: 1, fired: 2, missed: 3, damaged: 4, killed: 5};
 		const myFieldModel = [], opponentFieldModel = [];
 		let isMyTurn = false, isOpponentTurn = false, fireRow, fireCol;
@@ -108,52 +109,18 @@
 		}
 		/* socket api - finish */
 
-		try {
-			const params = new URLSearchParams(location.search);
-			if (params.has('name')) myName = params.get('name');
-			if (params.has('opponent')) opponentName = params.get('opponent');
-		} catch(e) {
-			console.error('URLSearchParams failed or not supported');
-		}
-
-		function show(el) {
-			if (!el) return;
-			el.classList.remove('hidden');
-		}
-
-		function hide(el) {
-			if (!el) return;
-			el.classList.add('hidden');
-		}
-
-		function log(msg) {
-			statusEl.classList.remove('error');
-			statusEl.textContent = msg;
-		}
-
-		function logError(msg) {
-			statusEl.classList.add('error');
-			statusEl.textContent = msg;
-		}
-
-		function handleLoginClick() {
-			myName = nameInputEl.value;
-			if (!myName) {
-				logError('Введите имя!');
-				return;
-			}
-			doLogin();
-		}
-
+		/* handshake logic - start*/
 		function doLogin() {
 			if (nameInputEl.value !== myName) {
 				nameInputEl.value = myName;
 			}
 			nameInputEl.disabled = true;
+			loginButtonEl.disabled = true;
 			send(`iam ${myName}`, (msg) => {
 				nameInputEl.disabled = false;
 				if (isNok(msg)) {
 					dropHandler();
+					loginButtonEl.disabled = false;
 					logError(msg.substring(CMD.nok.length).trim());
 					return;
 				}
@@ -166,23 +133,16 @@
 			log('Ждём ответа...');
 		}
 
-		function handleOfferClick() {
-			opponentName = opponentInputEl.value;
-			if (!opponentName) {
-				logError('Введите имя соперника!');
-				return;
-			}
-			doOffer();
-		}
-
 		function doOffer() {
 			if (opponentInputEl.value !== opponentName) {
 				opponentInputEl.value = opponentName;
 			}
 			opponentInputEl.disabled = true;
+			offerButtonEl.disabled = true;
 			send(`${CMD.offer} ${gamename} ${CMD.to} ${opponentName}`, (msg) => {
 				if (isNok(msg)) {
 					opponentInputEl.disabled = false;
+					offerButtonEl.disabled = false;
 					dropHandler();
 					logError(msg.substring(CMD.nok.length).trim());
 					return;
@@ -202,12 +162,15 @@
 					} else {
 						log('Игра или соперник не совпали');
 						opponentInputEl.disabled = false;
+						offerButtonEl.disabled = false;
 					}
 				}
 			});
 			log('Ждём ответа...');
 		}
+		/* handshake logic - finish*/
 
+		/* game logic - start */
 		function waitForOpponent(msg) {
 			if (isOk(msg)) return;
 			if (!isMsg(msg)) {
@@ -305,9 +268,22 @@
 						pairs.forEach(([r, c]) => {
 							setShipState(opponentFieldEl, r, c, CELL.killed);
 						});
+						// помечаем рядом стоящие клетки простреленными
+						const nearPairs = getPairsNearShipPairs(pairs);
+						nearPairs.forEach(([r, c]) => {
+							if (opponentFieldModel[r][c] !== CELL.empty) return;
+							opponentFieldModel[r][c] = CELL.fired;
+							setShipState(opponentFieldEl, r, c, CELL.fired);
+						});
 						if (isAllShipsSet(countShips(opponentFieldModel, CELL.killed))) {
 							setFieldDisabled(opponentFieldEl, true);
 							send(`${CMD.msg} ${GAME_MSG.imwin} ${JSON.stringify(getShipPairs(myFieldModel))}`);
+							setTimeout(() => {
+								send(CMD.finish, () => {
+									dropHandler();
+									show(playAgainButtonEl);
+								});
+							}, FINISH_DELAY);
 							log('Победа!');
 						} else {
 							isMyTurn = true;
@@ -328,10 +304,88 @@
 					} catch(e) {
 						logError('Неожиданная ошибка хода');
 					}
+					setTimeout(() => {
+						send(CMD.finish, () => {
+							dropHandler();
+							show(playAgainButtonEl);
+						});
+					}, FINISH_DELAY);
 				}
 				break;
 			}
  		}
+		/* game logic - finish */
+
+		/* view methods - start */
+		function show(el) {
+			if (!el) return;
+			el.classList.remove('hidden');
+		}
+
+		function hide(el) {
+			if (!el) return;
+			el.classList.add('hidden');
+		}
+
+		function log(msg) {
+			statusEl.classList.remove('error');
+			statusEl.textContent = msg;
+		}
+
+		function logError(msg) {
+			statusEl.classList.add('error');
+			statusEl.textContent = msg;
+		}
+
+		function handleLoginClick() {
+			myName = nameInputEl.value;
+			if (!myName) {
+				logError('Введите имя!');
+				return;
+			}
+			doLogin();
+		}
+
+		function handleOfferClick() {
+			opponentName = opponentInputEl.value;
+			if (!opponentName) {
+				logError('Введите имя соперника!');
+				return;
+			}
+			doOffer();
+		}
+
+		function handleStartClick() {
+			startButtonEl.classList.add('hidden');
+			setFieldDisabled(myFieldEl, true);
+			if (!isOpponentTurn) {
+				isMyTurn = true;
+				log('Ждём когда соперник расставит корабли...');
+			} else {
+				isMyTurn = false;
+				log('Ждём выстрела соперника...');
+				setFieldDisabled(opponentFieldEl, false);
+			}
+			send(`${CMD.msg} ${GAME_MSG.ready}`);
+		}
+
+		function handlePlayAgainClick() {
+			clearFieldModel(myFieldModel);
+			clearFieldModel(opponentFieldModel);
+			isMyTurn = false;
+			isOpponentTurn = false;
+
+			hide(playAgainButtonEl);
+			hide(gameEl);
+			show(opponentModalEl);
+			syncWithModel(myFieldEl, myFieldModel);
+			syncWithModel(opponentFieldEl, opponentFieldModel);
+			setFieldDisabled(myFieldEl, false);
+			setFieldDisabled(opponentFieldEl, true);
+			show(startButtonEl);
+			startButtonEl.disabled = true;
+			doOffer();
+		}
 
 		function fillField(el, handleClick, disabled) {
 			for(let row = 0; row < FIELD_HEIGHT; row++) {
@@ -389,6 +443,16 @@
 			}
 		}
 
+		function syncWithModel(fieldEl, model) {
+			for(let row = 0; row < FIELD_HEIGHT; row++) {
+				for(let col = 0; col < FIELD_WIDTH; col++) {
+					setShipState(fieldEl, row, col, model[row][col]);
+				}
+			}
+		}
+		/* view methods - finish */
+
+		/* model methods - start */
 		function clearFieldModel(model) {
 			model.splice(0, model.length);
 			for(let row = 0; row < FIELD_HEIGHT; row++) {
@@ -399,9 +463,7 @@
 			}
 		}
 
-		/*
-			возвращает число кораблей из одинакового количества клеток и признак ошибки
-		*/
+		// возвращает число кораблей из одинакового количества клеток и признак ошибки
 		function countShips(model, type=CELL.ship) {
 			const stat = {error: false};
 			const checkedPairs = new Set();
@@ -547,6 +609,21 @@
 			return pairs;
 		}
 
+		function getPairsNearShipPairs(shipPairs) {
+			const shipSet = new Set(shipPairs.map(([r,c]) => `${r}-${c}`));
+			const nearSet = new Set();
+			shipPairs.forEach(([r,c]) => {
+				for(dr=-1; dr<=1; dr++) {
+					for(dc=-1; dc<=1; dc++) {
+						if (!isValidRow(r+dr) || !isValidCol(c+dc)) continue;
+						const key = `${r+dr}-${c+dc}`;
+						if (!shipSet.has(key)) nearSet.add(key);
+					}
+				}
+			});
+			return Array.from(nearSet).map(key => key.split('-').map(Number));
+		}
+
 		function isValidRow(row) {
 			return typeof row === 'number' && row >= 0 && row < FIELD_HEIGHT;
 		}
@@ -554,22 +631,26 @@
 		function isValidCol(col) {
 			return typeof col === 'number' && col >= 0 && col < FIELD_WIDTH;
 		}
+		/* model methods - finish */
 
-		function handleStartClick() {
-			startButtonEl.classList.add('hidden');
-			setFieldDisabled(myFieldEl, true);
-			if (!isOpponentTurn) {
-				isMyTurn = true;
-				log('Ждём когда соперник расставит корабли...');
-			} else {
-				isMyTurn = false;
-				log('Ждём выстрела соперника...');
-				setFieldDisabled(opponentFieldEl, false);
-			}
-			send(`${CMD.msg} ${GAME_MSG.ready}`);
-		}
-
+		/* initialization - start */
 		function init() {
+			// get URL params
+			try {
+				const params = new URLSearchParams(location.search);
+				if (params.has('name')) myName = params.get('name');
+				if (params.has('opponent')) opponentName = params.get('opponent');
+			} catch(e) {
+				console.error('URLSearchParams failed or not supported');
+			}
+
+			// init model
+			clearFieldModel(myFieldModel);
+			clearFieldModel(opponentFieldModel);
+			isMyTurn = false;
+			isOpponentTurn = false;
+
+			// init DOM elements
 			nameModalEl = document.getElementById('name-modal');
 			nameInputEl = document.getElementById('name');
 			loginButtonEl = document.getElementById('login');
@@ -581,16 +662,15 @@
 			myFieldEl = document.getElementById('my-field');
 			opponentFieldEl = document.getElementById('opponent-field');
 			startButtonEl = document.getElementById('start-game');
+			playAgainButtonEl = document.getElementById('play-again');
 
+			// add click handlers
 			loginButtonEl.addEventListener('click', handleLoginClick);
 			offerButtonEl.addEventListener('click', handleOfferClick);
 			startButtonEl.addEventListener('click', handleStartClick);
+			playAgainButtonEl.addEventListener('click', handlePlayAgainClick);
 
-			clearFieldModel(myFieldModel);
-			clearFieldModel(opponentFieldModel);
-			isMyTurn = false;
-			isOpponentTurn = false;
-
+			// place cell buttons and add click handlers
 			fillField(myFieldEl, (button, row, col) => {
 				button.classList.toggle('ship');
 				myFieldModel[row][col] = myFieldModel[row][col] === CELL.empty ? CELL.ship : CELL.empty;
@@ -607,6 +687,7 @@
 					startButtonEl.disabled = false;
 				}
 			}, false);
+
 			fillField(opponentFieldEl, (button, row, col) => {
 				if (!isMyTurn || opponentFieldModel[row][col] !== CELL.empty) return;
 				isMyTurn = false;
@@ -617,6 +698,7 @@
 				send(`${CMD.msg} ${GAME_MSG.fire} ${fireRow} ${fireCol}`);
 			}, true);
 
+			// start game
 			if (isSocketReady) {
 				show(nameModalEl);
 				if (myName) doLogin();
@@ -624,6 +706,7 @@
 		}
 
 		window.onload = init;
+		/* initialization - finish */
 	</script>
 </head>
 <body>
@@ -636,7 +719,8 @@
 				<div id="my-field" class="field"></div>
 				<div id="opponent-field" class="field"></div>
 			</div>
-			<button id="start-game" disabled>Начать игру</button>
+			<button id="start-game" class="game-button" disabled>Начать игру</button>
+			<button id="play-again" class="game-button hidden">Сыграть ещё</button>
 		</div>
 	</div>
 	<div id="status"></div>
